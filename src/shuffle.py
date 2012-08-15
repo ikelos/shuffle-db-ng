@@ -17,7 +17,9 @@ class Record(object):
         output = ""
         for i in self.struct:
             (fmt, default) = self.struct[i]
-            output += struct.pack(fmt, self.fields.get(i, default))
+            if fmt == "4s":
+                fmt, default = "I", int(binascii.hexlify(default), 16)
+            output += struct.pack("<" + fmt, self.fields.get(i, default))
         return output
 
 class TunesSD(Record):
@@ -28,7 +30,7 @@ class TunesSD(Record):
         Record.__init__(self)
         self.struct = collections.OrderedDict([
                            ("header_id", ("4s", "shdb")),
-                           ("unknown1", ("I", 0x01000102)),
+                           ("unknown1", ("I", 0x02010001)),
                            ("total_length", ("I", 64)),
                            ("total_number_of_tracks", ("I", 0)),
                            ("total_number_of_playlists", ("I", 0)),
@@ -177,7 +179,7 @@ class Shuffler(object):
                     self.db.add_playlist(os.path.join(dirpath, filename))
 
     def write_database(self):
-        print binascii.hexlify(self.db.construct())
+        print self.db.construct()
 
 #
 # Read all files from the directory
