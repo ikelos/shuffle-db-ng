@@ -5,6 +5,7 @@ import binascii
 import struct
 import os.path
 import mutagen
+import subprocess
 import collections
 
 class Record(object):
@@ -40,36 +41,33 @@ class TunesSD(Record):
                            ("unknown3", ("H", 0)),
                            ("total_tracks_without_podcasts", ("I", 0)),
                            ("track_header_offset", ("I", 64)),
-                           ("paylist_header_offset", ("I", 0)),
+                           ("playlist_header_offset", ("I", 0)),
                            ("unknown4", ("20s", "\x00" * 20)),
                                                ])
 
     def construct(self):
-        self.track_header.base_offset = 40
+        # The header is a fixed length, so no need to precalculate it
+        self.track_header.base_offset = 64
         track_header = self.track_header.construct()
+        # The playlist offset will depend on the number of tracks
 
-        self.fields["total_number_of_tracks"] = len(self.track_header.tracks)
-        self.fields["total_tracks_without_podcasts"] = len(self.track_header.tracks)
-        self.fields["total_number_of_paylists"] = len(self.play_header.lists)
+        self.play_header.base_offset = len(track_header) + self.track_header.base_offset
+        self.play_header.create_master_list(range(len(self.track_header.tracks)))
+        play_header = self.play_header.construct()
+        self.fields["playlist_header_offset"] = self.play_header.base_offset
+
+        self.fields["total_number_of_tracks"] = self.track_header.fields["number_of_tracks"]
+        self.fields["total_tracks_without_podcasts"] = self.track_header.fields["number_of_tracks"]
+        self.fields["total_number_of_playlists"] = self.play_header.fields["number_of_playlists"]
 
         output = Record.construct(self)
-        return output + track_header
+        return output + track_header + play_header
 
     def add_track(self, filename):
-        self.track_header.add(self.base, filename)
+        self.track_header.add(self.base, os.path.abspath(filename))
 
     def add_playlist(self, filename):
-        self.play_header.add(self.base, filename)
-
-class PlaylistHeader(Record):
-    def __init__(self):
-        self.lists = []
-        Record.__init__(self)
-        self.struct = {}
-
-    def add(self, base, filename):
-        playlist = None
-        self.lists.append(playlist)
+        self.play_header.add(self.base, os.path.abspath(filename))
 
 class TrackHeader(Record):
     def __init__(self):
@@ -81,20 +79,21 @@ class TrackHeader(Record):
                            ("total_length", ("I", 0)),
                            ("number_of_tracks", ("I", 0)),
                            ("unknown1", ("Q", 0)),
-                                               ])
+                                             ])
 
     def construct(self):
         self.fields["number_of_tracks"] = len(self.tracks)
         self.fields["total_length"] = 20 + (len(self.tracks) * 4)
         output = Record.construct(self)
-        for i in range(len(self.tracks)):
-            output += struct.pack("I", self.base_offset + self.fields["total_length"] + (0x174 * i))
+        track_chunk = ""
         for i in self.tracks:
-            output += i.construct()
-        return output
+            output += struct.pack("I", self.base_offset + self.fields["total_length"] + len(track_chunk))
+            track_chunk += i.construct()
+        return output + track_chunk
 
     def add(self, base, filename):
         track = Track()
+        print "[*] Adding song", filename
         track.populate(base, filename)
         self.tracks.append(track)
 
@@ -118,8 +117,8 @@ class Track(Record):
                            ("remember", ("B", 0)),
                            ("unintalbum", ("B", 0)),
                            ("unknown", ("B", 0)),
-                           ("pregap", ("I", 0x240)),
-                           ("postgap", ("I", 0xc9c)),
+                           ("pregap", ("I", 0x210)),
+                           ("postgap", ("I", 0x3e4)),
                            ("numsamples", ("I", 0)),
                            ("unknown2", ("I", 0)),
                            ("gapless", ("I", 0)),
@@ -155,12 +154,94 @@ class Track(Record):
             self.fields["albumid"] = len(self.albums)
             self.albums.append(album)
 
-        self.fields["dbid"] = hashlib.md5(filename).digest()[:8] #pylint: disable-msg=E1101
+        self.fields["dbid"] = hashlib.md5(self.fields["filename"]).digest()[:8] #pylint: disable-msg=E1101
+        flitefn = "".join([ "{0:02X}".format(ord(i)) for i in reversed(self.fields["dbid"])])
+        text = " - ".join(audio.get("title", "") + audio.get("artist", ""))
+        if not text:
+            text = os.path.splitext(os.path.basename(filename))[0]
+        subprocess.call(["flite", "-voice", "rms", text, os.path.join(base, "iPod_Control", "Speakable", "Tracks", flitefn + ".wav")])
         # Create the voiceover wav file
+
+class PlaylistHeader(Record):
+    def __init__(self):
+        self.lists = []
+        self.masterlist = None
+        self.base_offset = 0
+        Record.__init__(self)
+        self.struct = collections.OrderedDict([
+                          ("header_id", ("4s", "shph")),
+                          ("total_length", ("I", 0)),
+                          ("number_of_playlists", ("I", 0)),
+                          ("number_of_podcast_lists", ("I", 0xffffffff)),
+                          ("number_of_master_lists", ("I", 0)),
+                          ("number_of_audiobook_lists", ("I", 0xffffffff)),
+                          ("unknown1", ("I", 0)),
+                          ("unknown2", ("I", 0xffffffff)),
+                          ("unknown3", ("I", 0)),
+                          ("unknown4", ("I", 0xffffffff)),
+                          ("unknown5", ("I", 0)),
+                          ("unknown6", ("I", 0xffffffff)),
+                          ("unknown7", ("20s", "\x00" * 20)),
+                                              ])
+
+    def construct(self):
+        self.fields["number_of_playlists"] = len(self.lists) + 1
+        self.fields["number_of_master_lists"] = 0
+        self.fields["total_length"] = 0x44 + (self.fields["number_of_playlists"] * 4)
+        output = Record.construct(self)
+        offset = self.base_offset + self.fields["total_length"]
+        output += struct.pack("I", offset)
+        playlist_chunk = self.masterlist.construct()
+        for i in self.lists:
+            output += struct.pack("I", offset)
+            playlist_chunk += i.construct()
+            offset += len(playlist_chunk)
+        return output + playlist_chunk
+
+    def create_master_list(self, tracks):
+        self.masterlist = Playlist()
+        # self.masterlist.fields["dbid"] = hashlib.md5("masterlist").digest()[:8] #pylint: disable-msg=E1101
+        self.masterlist.fields["listtype"] = 1
+        self.masterlist.fields["number_of_songs"] = len(tracks)
+        self.masterlist.fields["number_of_nonaudio"] = len(tracks)
+        self.masterlist.tracks = tracks
+
+    def add(self, base, filename):
+        playlist = Playlist()
+        playlist.populate(base, filename)
+        self.lists.append(playlist)
+
+class Playlist(Record):
+    def __init__(self):
+        self.tracks = []
+        Record.__init__(self)
+        self.struct = collections.OrderedDict([
+                          ("header_id", ("4s", "shpl")),
+                          ("total_length", ("I", 0)),
+                          ("number_of_songs", ("I", 0)),
+                          ("number_of_nonaudio", ("I", 0)),
+                          ("dbid", ("8s", "\x00" * 8)),
+                          ("listtype", ("I", 2)),
+                          ("unknown1", ("16s", "\x00" * 16))
+                                              ])
+
+    def populate(self, base, filename):
+        f = open(filename, "rb")
+        self.tracks = f.read().split("\n")
+        self.fields["dbid"] = hashlib.md5(filename[base:]).digest()[:8] #pylint: disable-msg=E1101
+        f.close()
+
+    def construct(self):
+        self.fields["total_length"] = 44 + (4 * len(self.tracks))
+        output = Record.construct(self)
+        for i in self.tracks:
+            output += struct.pack("I", i)
+        return output
 
 class Shuffler(object):
     def __init__(self, path):
         self.path, self.base = self.determine_base(path)
+        print self.base
         self.db = None
 
     def determine_base(self, path):
@@ -172,14 +253,17 @@ class Shuffler(object):
     def populate(self):
         self.db = TunesSD(self.base)
         for (dirpath, _dirnames, filenames) in os.walk(self.path, False):
-            for filename in filenames:
-                if os.path.splitext(filename)[1].lower() in (".mp3", ".m4a", ".m4b", ".m4p", ".aa", ".wav"):
-                    self.db.add_track(os.path.join(dirpath, filename))
-                if os.path.splitext(filename)[1].lower() in (".pls"):
-                    self.db.add_playlist(os.path.join(dirpath, filename))
+            if "ipod_control/speakable" not in dirpath.lower():
+                for filename in filenames:
+                    if os.path.splitext(filename)[1].lower() in (".mp3", ".m4a", ".m4b", ".m4p", ".aa", ".wav"):
+                        self.db.add_track(os.path.join(dirpath, filename))
+                    if os.path.splitext(filename)[1].lower() in (".pls",):
+                        self.db.add_playlist(os.path.join(dirpath, filename))
 
     def write_database(self):
-        print self.db.construct()
+        f = open(os.path.join(self.base, "iPod_Control", "iTunes", "iTunesSD"), "wb")
+        f.write(self.db.construct())
+        f.close()
 
 #
 # Read all files from the directory
