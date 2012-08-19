@@ -1,35 +1,86 @@
 
 import sys
-import hashlib
-import binascii
 import struct
+import urllib
 import os.path
+import hashlib
 import mutagen
+import binascii
 import subprocess
 import collections
 
 class Record(object):
 
-    def __init__(self):
-        self.struct = collections.OrderedDict([])
-        self.fields = {}
+    def __init__(self, parent):
+        self.parent = parent
+        self._struct = collections.OrderedDict([])
+        self._fields = {}
+
+    def __getitem__(self, item):
+        if item not in self._struct.keys():
+            raise KeyError
+        return self._fields.get(item, self._struct[item][1])
+
+    def __setitem__(self, item, value):
+        self._fields[item] = value
 
     def construct(self):
         output = ""
-        for i in self.struct:
-            (fmt, default) = self.struct[i]
+        for i in self._struct.keys():
+            (fmt, default) = self._struct[i]
             if fmt == "4s":
                 fmt, default = "I", int(binascii.hexlify(default), 16)
-            output += struct.pack("<" + fmt, self.fields.get(i, default))
+            output += struct.pack("<" + fmt, self._fields.get(i, default))
         return output
 
+    def text_to_speech(self, text, dbid, playlist = False):
+        # Create the voiceover wav file
+        fn = "".join(["{0:02X}".format(ord(x)) for x in reversed(dbid)])
+        path = os.path.join(self.base, "iPod_Control", "Speakable", "Tracks" if not playlist else "Playlists", fn + ".wav")
+        subprocess.call(["flite", "-voice", "rms", "-t", text, path])
+
+    def path_to_ipod(self, filename):
+        if os.path.commonprefix([os.path.abspath(filename), self.base]) != self.base:
+            raise IOError("Cannot get Ipod filename, since file is outside the IPOD path")
+        ipodname = "/".join(os.path.abspath(filename)[len(self.base):].split(os.path.sep))
+        return ipodname
+
+    def ipod_to_path(self, ipodname):
+        return os.path.abspath(os.path.join(self.base, os.path.sep.join(ipodname.split("/"))))
+
+    @property
+    def shuffledb(self):
+        parent = self.parent
+        while parent.__class__ != Shuffler:
+            parent = parent.parent
+        return parent
+
+    @property
+    def base(self):
+        return self.shuffledb.base
+
+    @property
+    def tracks(self):
+        return self.shuffledb.tracks
+
+    @property
+    def albums(self):
+        return self.shuffledb.albums
+
+    @property
+    def artists(self):
+        return self.shuffledb.artists
+
+    @property
+    def lists(self):
+        return self.shuffledb.lists
+
 class TunesSD(Record):
-    def __init__(self, base = None):
-        self.base = base
-        self.track_header = TrackHeader()
-        self.play_header = PlaylistHeader()
-        Record.__init__(self)
-        self.struct = collections.OrderedDict([
+    def __init__(self, parent):
+        self.track_header = TrackHeader(self)
+        self.play_header = PlaylistHeader(self)
+        Record.__init__(self, parent)
+        self._struct = collections.OrderedDict([
                            ("header_id", ("4s", "shdb")),
                            ("unknown1", ("I", 0x02010001)),
                            ("total_length", ("I", 64)),
@@ -49,32 +100,24 @@ class TunesSD(Record):
         # The header is a fixed length, so no need to precalculate it
         self.track_header.base_offset = 64
         track_header = self.track_header.construct()
+
         # The playlist offset will depend on the number of tracks
-
         self.play_header.base_offset = len(track_header) + self.track_header.base_offset
-        self.play_header.create_master_list(range(len(self.track_header.tracks)))
-        play_header = self.play_header.construct()
-        self.fields["playlist_header_offset"] = self.play_header.base_offset
+        play_header = self.play_header.construct(self.track_header.tracks)
+        self["playlist_header_offset"] = self.play_header.base_offset
 
-        self.fields["total_number_of_tracks"] = self.track_header.fields["number_of_tracks"]
-        self.fields["total_tracks_without_podcasts"] = self.track_header.fields["number_of_tracks"]
-        self.fields["total_number_of_playlists"] = self.play_header.fields["number_of_playlists"]
+        self["total_number_of_tracks"] = self.track_header["number_of_tracks"]
+        self["total_tracks_without_podcasts"] = self.track_header["number_of_tracks"]
+        self["total_number_of_playlists"] = self.play_header["number_of_playlists"]
 
         output = Record.construct(self)
         return output + track_header + play_header
 
-    def add_track(self, filename):
-        self.track_header.add(self.base, os.path.abspath(filename))
-
-    def add_playlist(self, filename):
-        self.play_header.add(self.base, os.path.abspath(filename))
-
 class TrackHeader(Record):
-    def __init__(self):
-        self.tracks = []
+    def __init__(self, parent):
         self.base_offset = 0
-        Record.__init__(self)
-        self.struct = collections.OrderedDict([
+        Record.__init__(self, parent)
+        self._struct = collections.OrderedDict([
                            ("header_id", ("4s", "shth")),
                            ("total_length", ("I", 0)),
                            ("number_of_tracks", ("I", 0)),
@@ -82,29 +125,25 @@ class TrackHeader(Record):
                                              ])
 
     def construct(self):
-        self.fields["number_of_tracks"] = len(self.tracks)
-        self.fields["total_length"] = 20 + (len(self.tracks) * 4)
+        self["number_of_tracks"] = len(self.tracks)
+        self["total_length"] = 20 + (len(self.tracks) * 4)
         output = Record.construct(self)
+
+        # Construct the underlying tracks
         track_chunk = ""
         for i in self.tracks:
-            output += struct.pack("I", self.base_offset + self.fields["total_length"] + len(track_chunk))
-            track_chunk += i.construct()
+            track = Track(self)
+            print "[*] Adding track", i
+            track.populate(i)
+            output += struct.pack("I", self.base_offset + self["total_length"] + len(track_chunk))
+            track_chunk += track.construct()
         return output + track_chunk
-
-    def add(self, base, filename):
-        track = Track()
-        print "[*] Adding song", filename
-        track.populate(base, filename)
-        self.tracks.append(track)
 
 class Track(Record):
 
-    albums = []
-    artists = []
-
-    def __init__(self):
-        Record.__init__(self)
-        self.struct = collections.OrderedDict([
+    def __init__(self, parent):
+        Record.__init__(self, parent)
+        self._struct = collections.OrderedDict([
                            ("header_id", ("4s", "shtr")),
                            ("header_length", ("I", 0x174)),
                            ("start_at_pos_ms", ("I", 0)),
@@ -132,43 +171,43 @@ class Track(Record):
                            ("unknown5", ("32s", "\x00" * 32)),
                            ])
 
-    def populate(self, base, filename):
-        audio = mutagen.File(filename, easy = True)
-        self.fields["stop_at_pos_ms"] = int(audio.info.length * 1000)
-        self.fields["filename"] = filename[len(base):] + ("\x00" * (256 - len(filename) + len(base)))
+    def populate(self, filename):
+        self["filename"] = self.path_to_ipod(filename)
 
         if os.path.splitext(filename)[1].lower() in (".m4a", ".m4b", ".m4p", ".aa"):
-            self.fields["filetype"] = 2
+            self["filetype"] = 2
 
-        artist = audio.get("artist", [u"Unknown"])[0]
-        if artist in self.artists:
-            self.fields["artistid"] = self.artists.index(artist)
-        else:
-            self.fields["artistid"] = len(self.artists)
-            self.artists.append(artist)
+        text = os.path.splitext(os.path.basename(filename))[0]
+        audio = mutagen.File(filename, easy = True)
+        if audio:
+            self["stop_at_pos_ms"] = int(audio.info.length * 1000)
 
-        album = audio.get("album", [u"Unknown"])[0]
-        if album in self.albums:
-            self.fields["albumid"] = self.albums.index(album)
-        else:
-            self.fields["albumid"] = len(self.albums)
-            self.albums.append(album)
+            artist = audio.get("artist", [u"Unknown"])[0]
+            if artist in self.artists:
+                self["artistid"] = self.artists.index(artist)
+            else:
+                self["artistid"] = len(self.artists)
+                self.artists.append(artist)
 
-        self.fields["dbid"] = hashlib.md5(self.fields["filename"]).digest()[:8] #pylint: disable-msg=E1101
-        flitefn = "".join([ "{0:02X}".format(ord(i)) for i in reversed(self.fields["dbid"])])
-        text = " - ".join(audio.get("title", "") + audio.get("artist", ""))
-        if not text:
-            text = os.path.splitext(os.path.basename(filename))[0]
-        subprocess.call(["flite", "-voice", "rms", text, os.path.join(base, "iPod_Control", "Speakable", "Tracks", flitefn + ".wav")])
-        # Create the voiceover wav file
+            album = audio.get("album", [u"Unknown"])[0]
+            if album in self.albums:
+                self["albumid"] = self.albums.index(album)
+            else:
+                self["albumid"] = len(self.albums)
+                self.albums.append(album)
+
+            if audio.get("title", "") and audio.get("artist", ""):
+                text = " - ".join(audio.get("title", "") + audio.get("artist", ""))
+
+        # Handle the VoiceOverData
+        self["dbid"] = hashlib.md5(text).digest()[:8] #pylint: disable-msg=E1101
+        self.text_to_speech(text, self["dbid"])
 
 class PlaylistHeader(Record):
-    def __init__(self):
-        self.lists = []
-        self.masterlist = None
+    def __init__(self, parent):
         self.base_offset = 0
-        Record.__init__(self)
-        self.struct = collections.OrderedDict([
+        Record.__init__(self, parent)
+        self._struct = collections.OrderedDict([
                           ("header_id", ("4s", "shph")),
                           ("total_length", ("I", 0)),
                           ("number_of_playlists", ("I", 0)),
@@ -184,38 +223,36 @@ class PlaylistHeader(Record):
                           ("unknown7", ("20s", "\x00" * 20)),
                                               ])
 
-    def construct(self):
-        self.fields["number_of_playlists"] = len(self.lists) + 1
-        self.fields["number_of_master_lists"] = 0
-        self.fields["total_length"] = 0x44 + (self.fields["number_of_playlists"] * 4)
+    def construct(self, tracks): #pylint: disable-msg=W0221
+        self["number_of_playlists"] = len(self.lists) + 1
+        self["number_of_master_lists"] = 0
+        self["total_length"] = 0x44 + (self["number_of_playlists"] * 4)
+        # Start the header
         output = Record.construct(self)
-        offset = self.base_offset + self.fields["total_length"]
+        offset = self.base_offset + self["total_length"]
         output += struct.pack("I", offset)
-        playlist_chunk = self.masterlist.construct()
+
+        # Build the master list
+        masterlist = Playlist(self)
+        print "[+] Adding master playlist"
+        masterlist.set_master(tracks)
+        playlist_chunk = masterlist.construct(tracks)
+
+        # Build all the remaining playlists
         for i in self.lists:
-            output += struct.pack("I", offset)
-            playlist_chunk += i.construct()
-            offset += len(playlist_chunk)
+            playlist = Playlist(self)
+            print "[+] Adding playlist", i
+            playlist.populate(i)
+            if playlist["number_of_songs"] > 0:
+                output += struct.pack("I", self.base_offset + self["total_length"] + len(playlist_chunk))
+                playlist_chunk += playlist.construct(tracks)
         return output + playlist_chunk
 
-    def create_master_list(self, tracks):
-        self.masterlist = Playlist()
-        # self.masterlist.fields["dbid"] = hashlib.md5("masterlist").digest()[:8] #pylint: disable-msg=E1101
-        self.masterlist.fields["listtype"] = 1
-        self.masterlist.fields["number_of_songs"] = len(tracks)
-        self.masterlist.fields["number_of_nonaudio"] = len(tracks)
-        self.masterlist.tracks = tracks
-
-    def add(self, base, filename):
-        playlist = Playlist()
-        playlist.populate(base, filename)
-        self.lists.append(playlist)
-
 class Playlist(Record):
-    def __init__(self):
-        self.tracks = []
-        Record.__init__(self)
-        self.struct = collections.OrderedDict([
+    def __init__(self, parent):
+        self.listtracks = []
+        Record.__init__(self, parent)
+        self._struct = collections.OrderedDict([
                           ("header_id", ("4s", "shpl")),
                           ("total_length", ("I", 0)),
                           ("number_of_songs", ("I", 0)),
@@ -225,24 +262,89 @@ class Playlist(Record):
                           ("unknown1", ("16s", "\x00" * 16))
                                               ])
 
-    def populate(self, base, filename):
+    def set_master(self, tracks):
+        self["dbid"] = hashlib.md5("masterlist").digest()[:8] #pylint: disable-msg=E1101
+        self["listtype"] = 1
+        self.text_to_speech("All songs", self["dbid"], True)
+        self.listtracks = tracks
+
+    def populate_m3u(self, data):
+        listtracks = []
+        for i in data:
+            if not i.startswith("#"):
+                path = i.strip()
+                listtracks.append(path)
+        return listtracks
+
+    def populate_pls(self, data):
+        sorttracks = []
+        for i in data:
+            dataarr = i.strip().split("=")
+            if dataarr[0].lower().startswith("file"):
+                num = int(dataarr[0][4:])
+                filename = urllib.unquote(dataarr[1]).strip()
+                if filename.lower().startswith('file://'):
+                    filename = filename[7:]
+                sorttracks.append((num, filename))
+        listtracks = [ x for (_, x) in sorted(sorttracks) ]
+        return listtracks
+
+    def remove_relatives(self, relative, filename):
+        base = os.path.dirname(os.path.abspath(filename))
+        if not os.path.exists(relative):
+            relative = os.path.join(base, relative)
+        return relative
+
+    def populate(self, filename):
         f = open(filename, "rb")
-        self.tracks = f.read().split("\n")
-        self.fields["dbid"] = hashlib.md5(filename[base:]).digest()[:8] #pylint: disable-msg=E1101
+        data = f.readlines()
         f.close()
 
-    def construct(self):
-        self.fields["total_length"] = 44 + (4 * len(self.tracks))
+        extension = os.path.splitext(filename)[1].lower()
+        if extension == '.pls':
+            self.listtracks = self.populate_pls(data)
+        elif extension == '.m3u':
+            self.listtracks = self.populate_m3u(data)
+        # Ensure all paths are not relative to the playlist file
+        for i in range(len(self.listtracks)):
+            self.listtracks[i] = self.remove_relatives(self.listtracks[i], filename)
+
+        # Handle the VoiceOverData
+        text = os.path.splitext(os.path.basename(filename))[0]
+
+        self["dbid"] = hashlib.md5(text).digest()[:8] #pylint: disable-msg=E1101
+        self.text_to_speech(text, self["dbid"], True)
+
+    def construct(self, tracks): #pylint: disable-msg=W0221
+        self["total_length"] = 44 + (4 * len(self.listtracks))
+        self["number_of_songs"] = 0
+
+        chunks = ""
+        for i in self.listtracks:
+            position = tracks.index(self.ipod_to_path(i))
+            if position > -1:
+                chunks += struct.pack("I", position)
+                self["number_of_songs"] += 1
+        self["number_of_nonaudio"] = self["number_of_songs"]
+
         output = Record.construct(self)
-        for i in self.tracks:
-            output += struct.pack("I", i)
-        return output
+        return output + chunks
 
 class Shuffler(object):
     def __init__(self, path):
         self.path, self.base = self.determine_base(path)
-        print self.base
-        self.db = None
+        self.tracks = []
+        self.albums = []
+        self.artists = []
+        self.lists = []
+        self.tunessd = None
+
+    def dump_state(self):
+        print "Shuffle DB state"
+        print "Tracks", self.tracks
+        print "Albums", self.albums
+        print "Artists", self.artists
+        print "Playlists", self.lists
 
     def determine_base(self, path):
         base = os.path.abspath(path)
@@ -251,18 +353,19 @@ class Shuffler(object):
         return path, base
 
     def populate(self):
-        self.db = TunesSD(self.base)
+        self.tunessd = TunesSD(self)
         for (dirpath, _dirnames, filenames) in os.walk(self.path, False):
-            if "ipod_control/speakable" not in dirpath.lower():
+            # Ignore the speakable directory and any hidden directories
+            if "ipod_control/speakable" not in dirpath.lower() and "/." not in dirpath.lower():
                 for filename in filenames:
                     if os.path.splitext(filename)[1].lower() in (".mp3", ".m4a", ".m4b", ".m4p", ".aa", ".wav"):
-                        self.db.add_track(os.path.join(dirpath, filename))
-                    if os.path.splitext(filename)[1].lower() in (".pls",):
-                        self.db.add_playlist(os.path.join(dirpath, filename))
+                        self.tracks.append(os.path.abspath(os.path.join(dirpath, filename)))
+                    if os.path.splitext(filename)[1].lower() in (".pls", ".m3u"):
+                        self.lists.append(os.path.abspath(os.path.join(dirpath, filename)))
 
     def write_database(self):
         f = open(os.path.join(self.base, "iPod_Control", "iTunes", "iTunesSD"), "wb")
-        f.write(self.db.construct())
+        f.write(self.tunessd.construct())
         f.close()
 
 #
