@@ -156,8 +156,8 @@ class Track(Record):
                            ("remember", ("B", 0)),
                            ("unintalbum", ("B", 0)),
                            ("unknown", ("B", 0)),
-                           ("pregap", ("I", 0x210)),
-                           ("postgap", ("I", 0x3e4)),
+                           ("pregap", ("I", 0x200)),
+                           ("postgap", ("I", 0x200)),
                            ("numsamples", ("I", 0)),
                            ("unknown2", ("I", 0)),
                            ("gapless", ("I", 0)),
@@ -363,7 +363,7 @@ class Shuffler(object):
         for (dirpath, _dirnames, filenames) in os.walk(self.path, False):
             # Ignore the speakable directory and any hidden directories
             if "ipod_control/speakable" not in dirpath.lower() and "/." not in dirpath.lower():
-                for filename in filenames:
+                for filename in sorted(filenames, key = lambda x: x.lower()):
                     if os.path.splitext(filename)[1].lower() in (".mp3", ".m4a", ".m4b", ".m4p", ".aa", ".wav"):
                         self.tracks.append(os.path.abspath(os.path.join(dirpath, filename)))
                     if os.path.splitext(filename)[1].lower() in (".pls", ".m3u"):
