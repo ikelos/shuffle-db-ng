@@ -102,7 +102,7 @@ class TunesSD(Record):
         track_header = self.track_header.construct()
 
         # The playlist offset will depend on the number of tracks
-        self.play_header.base_offset = len(track_header) + self.track_header.base_offset
+        self.play_header.base_offset = self.track_header.base_offset + len(track_header)
         play_header = self.play_header.construct(self.track_header.tracks)
         self["playlist_header_offset"] = self.play_header.base_offset
 
@@ -200,7 +200,7 @@ class Track(Record):
                 text = " - ".join(audio.get("title", "") + audio.get("artist", ""))
 
         # Handle the VoiceOverData
-        self["dbid"] = hashlib.md5(text).digest()[:8] #pylint: disable-msg=E1101
+        self["dbid"] = hashlib.md5(text.encode("ascii", "ignore")).digest()[:8] #pylint: disable-msg=E1101
         self.text_to_speech(text, self["dbid"])
 
 class PlaylistHeader(Record):
@@ -224,29 +224,36 @@ class PlaylistHeader(Record):
                                               ])
 
     def construct(self, tracks): #pylint: disable-msg=W0221
-        self["number_of_playlists"] = len(self.lists) + 1
-        self["number_of_master_lists"] = 0
-        self["total_length"] = 0x44 + (self["number_of_playlists"] * 4)
-        # Start the header
-        output = Record.construct(self)
-        offset = self.base_offset + self["total_length"]
-        output += struct.pack("I", offset)
-
         # Build the master list
         masterlist = Playlist(self)
         print "[+] Adding master playlist"
         masterlist.set_master(tracks)
-        playlist_chunk = masterlist.construct(tracks)
+        chunks = [masterlist.construct(tracks)]
 
         # Build all the remaining playlists
+        playlistcount = 1
         for i in self.lists:
             playlist = Playlist(self)
             print "[+] Adding playlist", i
             playlist.populate(i)
+            construction = playlist.construct(tracks)
             if playlist["number_of_songs"] > 0:
-                output += struct.pack("I", self.base_offset + self["total_length"] + len(playlist_chunk))
-                playlist_chunk += playlist.construct(tracks)
-        return output + playlist_chunk
+                playlistcount += 1
+                chunks += [construction]
+
+        self["number_of_playlists"] = playlistcount
+        self["number_of_master_lists"] = 0
+        self["total_length"] = 0x44 + (self["number_of_playlists"] * 4)
+        # Start the header
+
+        output = Record.construct(self)
+        offset = self.base_offset + self["total_length"]
+
+        for i in range(len(chunks)):
+            output += struct.pack("I", offset)
+            offset += len(chunks[i])
+
+        return output + "".join(chunks)
 
 class Playlist(Record):
     def __init__(self, parent):
@@ -311,7 +318,6 @@ class Playlist(Record):
 
         # Handle the VoiceOverData
         text = os.path.splitext(os.path.basename(filename))[0]
-
         self["dbid"] = hashlib.md5(text).digest()[:8] #pylint: disable-msg=E1101
         self.text_to_speech(text, self["dbid"], True)
 
