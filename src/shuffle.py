@@ -174,6 +174,11 @@ class Track(Record):
     def populate(self, filename):
         self["filename"] = self.path_to_ipod(filename)
 
+        # Make the assumption that the FAT filesystem codepage is Latin-1
+        # We therefore need to convert any UTF-8 filenames reported by dirwalk
+        # into Latin-1 names
+        self["filename"] = self["filename"].decode('utf-8').encode('latin-1')
+
         if os.path.splitext(filename)[1].lower() in (".m4a", ".m4b", ".m4p", ".aa"):
             self["filetype"] = 2
 
