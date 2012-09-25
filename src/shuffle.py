@@ -37,7 +37,7 @@ class Record(object):
         # Create the voiceover wav file
         fn = "".join(["{0:02X}".format(ord(x)) for x in reversed(dbid)])
         path = os.path.join(self.base, "iPod_Control", "Speakable", "Tracks" if not playlist else "Playlists", fn + ".wav")
-        subprocess.call(["flite", "-voice", "rms", "-t", text, path])
+        subprocess.call(["pico2wave", "-l", "en-GB", "-w", path, text])
 
     def path_to_ipod(self, filename):
         if os.path.commonprefix([os.path.abspath(filename), self.base]) != self.base:
