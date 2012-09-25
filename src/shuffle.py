@@ -365,7 +365,8 @@ class Shuffler(object):
 
     def populate(self):
         self.tunessd = TunesSD(self)
-        for (dirpath, _dirnames, filenames) in os.walk(self.path, False):
+        for (dirpath, dirnames, filenames) in os.walk(self.path):
+            dirnames.sort()
             # Ignore the speakable directory and any hidden directories
             if "ipod_control/speakable" not in dirpath.lower() and "/." not in dirpath.lower():
                 for filename in sorted(filenames, key = lambda x: x.lower()):
