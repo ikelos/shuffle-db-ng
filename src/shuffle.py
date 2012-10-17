@@ -42,7 +42,10 @@ class Record(object):
     def path_to_ipod(self, filename):
         if os.path.commonprefix([os.path.abspath(filename), self.base]) != self.base:
             raise IOError("Cannot get Ipod filename, since file is outside the IPOD path")
-        ipodname = "/".join(os.path.abspath(filename)[len(self.base):].split(os.path.sep))
+        baselen = len(self.base)
+        if self.base.endswith(os.path.sep):
+            baselen -= 1
+        ipodname = "/".join(os.path.abspath(filename)[baselen:].split(os.path.sep))
         return ipodname
 
     def ipod_to_path(self, ipodname):
@@ -386,7 +389,7 @@ class Shuffler(object):
 # Construct the appropriate iTunesSD file
 #   http://shuffle3db.wikispaces.com/iTunesSD3gen
 # Use festival to produce voiceover data
-# 
+#
 
 if __name__ == '__main__':
     shuffle = Shuffler(sys.argv[1])
