@@ -12,7 +12,6 @@ import urllib.request
 import mutagen
 
 
-# noinspection PyArgumentList
 class Record(object):
     def __init__(self, parent):
         self.parent = parent
@@ -87,7 +86,6 @@ class Record(object):
         return self.shuffledb.lists
 
 
-# noinspection PyArgumentList
 class TunesSD(Record):
     def __init__(self, parent):
         self.track_header = TrackHeader(self)
@@ -127,7 +125,6 @@ class TunesSD(Record):
         return output + track_header + play_header
 
 
-# noinspection PyArgumentList
 class TrackHeader(Record):
     def __init__(self, parent):
         self.base_offset = 0
@@ -155,7 +152,6 @@ class TrackHeader(Record):
         return output + track_chunk
 
 
-# noinspection PyArgumentList
 class Track(Record):
     def __init__(self, parent):
         Record.__init__(self, parent)
@@ -221,11 +217,10 @@ class Track(Record):
                 text = " - ".join(audio.get("title", "") + audio.get("artist", ""))
 
         # Handle the VoiceOverData
-        self["dbid"] = hashlib.md5(text.encode("ascii", "ignore")).digest()[:8]  # pylint: disable-msg=E1101
+        self["dbid"] = hashlib.md5(text.encode("ascii", "ignore")).digest()[:8]
         self.text_to_speech(text, self["dbid"])
 
 
-# noinspection PyArgumentList
 class PlaylistHeader(Record):
     def __init__(self, parent):
         self.base_offset = 0
@@ -246,7 +241,7 @@ class PlaylistHeader(Record):
             ("unknown7", ("20s", b"\x00" * 20)),
         ])
 
-    def construct(self):  # pylint: disable-msg=W0221
+    def construct(self):
         # Build the master list
         masterlist = Playlist(self)
         print("[+] Adding master playlist")
@@ -279,7 +274,6 @@ class PlaylistHeader(Record):
         return output + b"".join(chunks)
 
 
-# noinspection PyArgumentList
 class Playlist(Record):
     def __init__(self, parent):
         self.listtracks = []
@@ -295,7 +289,7 @@ class Playlist(Record):
         ])
 
     def set_master(self, tracks):
-        self["dbid"] = hashlib.md5(b"masterlist").digest()[:8]  # pylint: disable-msg=E1101
+        self["dbid"] = hashlib.md5(b"masterlist").digest()[:8]
         self["listtype"] = 1
         self.text_to_speech("All songs", self["dbid"], True)
         self.listtracks = tracks
@@ -343,10 +337,10 @@ class Playlist(Record):
 
         # Handle the VoiceOverData
         text = os.path.splitext(os.path.basename(filename))[0]
-        self["dbid"] = hashlib.md5(bytes(text, "utf-8")).digest()[:8]  # pylint: disable-msg=E1101
+        self["dbid"] = hashlib.md5(bytes(text, "utf-8")).digest()[:8]
         self.text_to_speech(text, self["dbid"], True)
 
-    def construct(self):  # pylint: disable-msg=W0221
+    def construct(self):
         self["total_length"] = 44 + (4 * len(self.listtracks))
         self["number_of_songs"] = 0
 
