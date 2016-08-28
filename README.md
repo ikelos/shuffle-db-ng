@@ -13,3 +13,10 @@ This is beta software. I've tested it on my own device, but no one else's yet. I
 It currently requires picoTTS as the text-to-speech engine, and is primarily designed to run on linux systems.
 
 It also will not create files necessary to successfully sync with iTunes. If you want to manage your device under both linux and windows, then it's suggested to use gtkpod or similar. 
+
+Development
+===========
+
+This was built purely as a personal project, and has been updated only when necessary.  However, it's been forked by a number of people who've added several additional features.
+
+One of the most maintained versions can be found at [https://github.com/nims11/IPod-Shuffle-4g](https://github.com/nims11/IPod-Shuffle-4g).
